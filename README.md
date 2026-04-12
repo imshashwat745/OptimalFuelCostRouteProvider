@@ -103,6 +103,11 @@ The optimizer runs in two phases.
 
 ---
 
+## Deployed URL (Since it is deployed on a serverless arch, so initial requests could have more latency due to server restart)
+https://spotter-app-699435028757.asia-south2.run.app/
+
+### Example api hit: https://spotter-app-699435028757.asia-south2.run.app/api/route/?start=Chicago,IL&finish=Denver,CO&buffer_gallons=5&greedy_fill=false
+
 ## API Reference
 
 ### `GET /api/route/`
