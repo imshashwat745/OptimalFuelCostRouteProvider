@@ -124,7 +124,7 @@ Find the optimal fuel stop plan between two locations.
 GET /api/route/?start=Chicago,IL&finish=Denver,CO&buffer_gallons=5&greedy_fill=false
 ```
 
-**Success Response — `200 OK`**
+**Success Response — `200 OK`** (Values taken an example here)
 
 ```json
 {
