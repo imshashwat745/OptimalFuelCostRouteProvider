@@ -44,6 +44,10 @@ graph TD
 ```
 
 ### 5. Example Graph Representation
+## Example Graph
+
+![Graph Example](spotter/assets/example_graph.png)
+
 During execution, the algorithm builds a directed graph to find the shortest path based on fuel cost. Below is a simplified visualization:
 
 - **Nodes**: Represent the start, end, and valid gas stations along the way.
