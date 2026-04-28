@@ -1,283 +1,128 @@
-# Spotter
+# Spotter Optimal Routing Engine
 
-A Django REST API that computes the optimal fuel stop strategy for long-haul truck routes. Given a start and end location, it finds the cheapest combination of fuel stops along the route using Dijkstra's algorithm across real station price data.
+Spotter is a high-performance routing API built on Django that calculates the most cost-effective fueling strategy for long-haul trucking. It integrates directly with OSRM (Open Source Routing Machine) to compute driving routes, and uses a custom Dijkstra-based graph algorithm to minimize fuel costs based on real-time station data.
+
+## The Algorithm Flow
+
+At its core, Spotter models fuel optimization as a shortest-path graph problem, executing in several high-speed phases:
+
+### 1. Route Generation & Spatial Indexing
+When a user requests a route (e.g., Chicago to Denver):
+- **Geocoding:** The start and end cities are converted to coordinates using the OpenRouteService API.
+- **Route Fetching:** Spotter queries OSRM to retrieve the physical geometry of the driving route.
+- **Spatial Filtering (STRtree):** The system maintains an `STRtree` (Sort-Tile-Recursive spatial index) of over 30,000 national fuel stations. It draws a "buffer polygon" over the route geometry and instantly culls out stations that are too far away.
+- **Segment Projection:** The surviving candidate stations are projected onto the nearest highway segments to calculate exact "mile markers" and the precise off-route detour distances.
+
+### 2. Graph Optimization (The "Fill-To-Full" Model)
+The perfectly ordered list of stations is fed into `fuel_optimization_engine.py`.
+- **Dijkstra's Pathfinding:** The engine builds a directed graph where nodes are stations and edges are driving segments. The edge weights represent the **cost of fuel burned**. 
+  - *The brilliance of the algorithm:* In a "fill-to-full" strategy, you arrive at a station and replenish the exact amount of fuel you burned driving there. Therefore, the financial cost of driving a leg is calculated using the price of fuel at the **destination** station.
+  - Dijkstra evaluates every possible sequence of stops and finds the absolute minimum theoretical cost path.
+
+### 3. Greedy Refinement
+Dijkstra assumes you always fill to the top. The final pass is a "Greedy Look-Ahead" refinement. It walks the Dijkstra-selected path and determines exactly how many gallons to buy:
+- If the next station is cheaper, it only buys enough gas to reach it.
+- If the next station is more expensive, it fills the tank to the top to delay buying expensive gas.
+- At the final stop, it only buys exactly what is needed to reach the destination plus a safety buffer.
 
 ---
 
-## Project Structure
+### 4. Function Call Graph
+The following diagram illustrates the flow of execution from the API view down to the core utility functions:
 
+```mermaid
+graph TD
+    A["RouteOptimizerView.get<br>(spotter/api/views.py)<br><i>Entry point, validates request parameters</i>"] --> B["calculate_cheapest_route<br>(spotter/services/optimal_route_orchestrator.py)<br><i>Main orchestrator managing parallel execution</i>"]
+    
+    B --> C["fetch_coordinates_for_address<br>(spotter/utils/spatial_routing_client.py)<br><i>Geocodes start and end cities</i>"]
+    B --> D["load_stations_in_memory<br>(spotter/utils/spatial_routing_client.py)<br><i>Loads CSV into STRtree spatial index</i>"]
+    B --> E["fetch_osrm_route_alternatives<br>(spotter/utils/spatial_routing_client.py)<br><i>Gets driving paths from OSRM</i>"]
+    B --> F["_evaluate_route_alternative<br>(spotter/services/optimal_route_orchestrator.py)<br><i>Evaluates cost for a single route option</i>"]
+    
+    F --> G["find_stations_along_route_corridor<br>(spotter/utils/spatial_routing_client.py)<br><i>Finds stations strictly near the route</i>"]
+    F --> H["calculate_optimal_fuel_stops<br>(spotter/utils/fuel_optimization_engine.py)<br><i>Runs Dijkstra and greedy fill math</i>"]
 ```
-proj/
-├── config/
-│   ├── settings.py
-│   └── urls.py
+
+### 5. Example Graph Representation
+During execution, the algorithm builds a directed graph to find the shortest path based on fuel cost. Below is a simplified visualization:
+
+- **Nodes**: Represent the start, end, and valid gas stations along the way.
+- **Edges**: Represent the drivable legs between nodes.
+- **Weights**: The total dollar cost to drive that leg (gallons burned × price of fuel at the destination node).
+
+```mermaid
+graph LR
+    Start(("Start<br>Tank Full")) -- "Weight: $45.00<br>(15 gal @ $3.00)" --> S1(("Station A<br>$3.00/gal"))
+    Start -- "Weight: $64.00<br>(20 gal @ $3.20)" --> S2(("Station B<br>$3.20/gal"))
+    
+    S1 -- "Weight: $15.00<br>(5 gal @ $3.00)" --> S2
+    S1 -- "Weight: $75.00<br>(25 gal @ $3.00)" --> End(("End<br>Destination"))
+    
+    S2 -- "Weight: $64.00<br>(20 gal @ $3.20)" --> End
+    
+    classDef startend fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef station fill:#bbf,stroke:#333,stroke-width:2px;
+    class Start,End startend;
+    class S1,S2 station;
+```
+*Note: In the fill-to-full strategy, when you drive from Start to Station A, you arrive and refill the fuel you just burned using Station A's price. The weight is the actual financial cost incurred at the pump.*
+
+---
+
+## Codebase Architecture
+
+The project adheres strictly to Domain-Driven Design principles. Each layer only communicates downwards.
+
+```text
+spotter/
+├── api/
+│   ├── views.py                           # The REST API boundary
+│   └── serializers.py                     # Input validation schemas
 │
-├── spotter/
-│   ├── api/
-│   │   ├── views.py          # HTTP boundary — request/response only
-│   │   └── serializers.py    # Input validation and defaults
-│   │
-│   ├── services/
-│   │   └── route_service.py  # Orchestration layer
-│   │
-│   ├── core/
-│   │   ├── constants.py      # Static values (MPG, range, defaults)
-│   │   └── config.py         # Environment variable reads
-│   │
-│   ├── utils/
-│   │   ├── geo.py            # Haversine distance, segment projection
-│   │   ├── routing.py        # Google Geocoding, OSRM, station mapping
-│   │   └── fuel_optimizer.py # Graph construction, Dijkstra, greedy fill
-│   │
-│   ├── data/
-│   │   └── fuel_prices_geocoded.csv
-│   │
-│   ├── exceptions.py
-│   ├── tests.py
-│   └── urls.py
+├── services/
+│   └── optimal_route_orchestrator.py      # The Conductor. Orchestrates spatial data, OSRM, and the engine.
 │
-└── scripts/
-    ├── geocode.py            # One-time data pipeline (already run)
-    └── normalize.py          # One-time whitespace cleanup (already run)
+├── utils/
+│   ├── fuel_optimization_engine.py        # The Math. Handles Dijkstra graphs and the greedy fill logic.
+│   ├── spatial_routing_client.py          # The Map. Handles OSRM requests and STRtree station mapping.
+│   └── geo.py                             # The Geometry. Haversine distance and vector projections.
+│
+└── core/
+    ├── config.py                          # Environment variable bindings
+    └── constants.py                       # Physical truck constants (MPG, Tank Capacity)
 ```
 
 ---
 
-## How It Works
+## Local Setup & Installation
 
-### Request Flow
+Follow these steps to run the engine locally:
 
-```
-GET /api/route/?start=Chicago,IL&finish=Denver,CO
-        |
-        v
-  RouteOptimizerView          api/views.py
-  Validates query params
-        |
-        v
-  get_optimal_route()         services/route_service.py
-  Orchestrates everything
-        |
-        |--- geocode_location() x 2    (parallel)     utils/routing.py
-        |    Converts city names to (lat, lng)
-        |    Cached 30 days in Django cache
-        |
-        |--- get_routes()                              utils/routing.py
-        |    Fetches up to 3 alternative routes
-        |    from OSRM (open-source routing engine)
-        |
-        |--- load_stations()                           utils/routing.py
-        |    Reads fuel_prices_geocoded.csv into
-        |    a list of station dicts
-        |
-        +--- For each route:
-             |
-             |--- map_stations_to_route()              utils/routing.py
-             |    Spatially indexes route segments
-             |    with an STRtree. Filters stations
-             |    within MAX_OFF_ROUTE_MILES. Annotates
-             |    each with mile_marker + off_route_miles.
-             |
-             +--- solve_graph()                        utils/fuel_optimizer.py
-                  Builds a directed graph:
-                  Start -> stations -> End
-                  Edge weight = fuel cost to drive that leg
-                  at the price of the departure station.
-                  Dijkstra finds cheapest path.
-                  Greedy pass decides exact fill amounts.
-
-        Returns cheapest result across all route alternatives.
-```
-
-### Optimizer Detail
-
-The optimizer runs in two phases.
-
-**Phase 1 — Dijkstra path selection.** Builds a directed graph where each edge weight is the fuel cost of driving that leg at the originating station's price. `nx.shortest_path` finds the globally cheapest sequence of stops.
-
-**Phase 2 — Greedy fill-amount pass.** Walks the Dijkstra-selected path and decides how many gallons to buy at each stop:
-
-- Default (`greedy_fill=false`): fill to full at every intermediate stop.
-- Greedy (`greedy_fill=true`): if a cheaper station exists ahead on the path and is reachable on the current tank, buy only enough to get there. Otherwise fill to full.
-- Last stop: buy only what is needed to reach the destination plus the buffer reserve.
-
----
-
-## Deployed URL (Since it is deployed on a serverless arch, so initial requests could have more latency due to server restart)
-https://spotter-app-699435028757.asia-south2.run.app/
-
-### Example api hit: https://spotter-app-699435028757.asia-south2.run.app/api/route/?start=Chicago,IL&finish=Denver,CO&buffer_gallons=5&greedy_fill=false
-
-## API Reference
-
-### `GET /api/route/`
-
-Find the optimal fuel stop plan between two locations.
-
-**Query Parameters**
-
-| Parameter | Required | Type | Default | Description |
-|---|---|---|---|---|
-| `start` | Yes | string | — | Starting location, e.g. `Chicago, IL` |
-| `finish` | Yes | string | — | Destination, e.g. `Denver, CO` |
-| `buffer_gallons` | No | float >= 0 | `5.0` | Safety reserve kept in tank at final stop |
-| `greedy_fill` | No | boolean | `false` | Buy minimum fuel needed vs. fill to full |
-
-**Example Request**
-
-```
-GET /api/route/?start=Chicago,IL&finish=Denver,CO&buffer_gallons=5&greedy_fill=false
-```
-
-**Success Response — `200 OK`** (Values taken an example here)
-
-```json
-{
-  "request": {
-    "start": "Chicago, IL",
-    "finish": "Denver, CO",
-    "buffer_gallons": 5.0,
-    "greedy_fill": false
-  },
-  "optimal_trip": {
-    "route_option": 1,
-    "total_distance_miles": 920.5,
-    "total_fuel_cost": 342.18,
-    "fuel_stops": [
-      {
-        "id": "1042_301",
-        "name": "PILOT TRAVEL CENTER #42",
-        "address": "I-80, Exit 145, Lincoln, NE",
-        "price": 3.429,
-        "lat": 40.8136,
-        "lon": -96.7026,
-        "mile_marker": 463.2,
-        "off_route_miles": 0.3,
-        "fuel_remaining_on_arrival": 18.4,
-        "fuel_filled": 31.6
-      }
-    ],
-    "route_geometry": {
-      "type": "LineString",
-      "coordinates": [[-87.6298, 41.8781], ["..."], [-104.9903, 39.7392]]
-    }
-  }
-}
-```
-
-**`fuel_stops` fields**
-
-| Field | Description |
-|---|---|
-| `id` | Internal station identifier |
-| `name` | Truckstop name |
-| `address` | Street address |
-| `price` | Retail diesel price at time of data export ($/gal) |
-| `lat` / `lon` | Station coordinates |
-| `mile_marker` | Distance along route where this station sits |
-| `off_route_miles` | How far off the main route to reach this station |
-| `fuel_remaining_on_arrival` | Gallons in tank when arriving at this stop |
-| `fuel_filled` | Gallons purchased here |
-
-**Error Responses**
-
-| Status | `error` key | Cause |
-|---|---|---|
-| `400` | `invalid_params` | Missing or invalid query parameters |
-| `400` | `same_destination` | Start and finish resolve to the same location |
-| `502` | `upstream_error` | Google Geocoding API or OSRM unreachable or failed |
-| `422` | `no_viable_route` | No combination of stations can bridge the route within vehicle range |
-| `500` | `internal_error` | Unexpected server error |
-
----
-
-## Configuration
-
-All tuneable values are read from environment variables. Copy `.env.example` to `.env` and fill in your values.
-
+### 1. Environment Preparation
+Ensure you have Python 3.10+ installed.
 ```bash
-cp .env.example .env
-```
-
-| Variable | Default | Description |
-|---|---|---|
-| `GOOGLE_API_KEY` | — | **Required.** Google Maps Geocoding API key |
-| `OSRM_BASE_URL` | `http://router.project-osrm.org` | OSRM routing server base URL |
-| `SPOTTER_MPG` | `10.0` | Vehicle fuel efficiency |
-| `SPOTTER_MAX_RANGE_MILES` | `500.0` | Maximum range on a full tank |
-| `SPOTTER_MAX_OFF_ROUTE_MILES` | `5.0` | Maximum detour distance to consider a station |
-| `SPOTTER_FUEL_CSV` | `fuel_prices_geocoded.csv` | Filename of the station data inside `spotter/data/` |
-| `SECRET_KEY` | — | Django secret key |
-| `DEBUG` | `False` | Django debug mode |
-| `ALLOWED_HOSTS` | — | Comma-separated allowed hosts |
-
----
-
-## Setup
-
-```bash
-# 1. Create and activate virtual environment
+# Create and activate a virtual environment
 python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+source venv/bin/activate  # On Windows use: venv\Scripts\activate
 
-# 2. Install dependencies
+# Install dependencies
 pip install -r requirements.txt
+```
 
-# 3. Configure environment
-cp .env.example .env
-# Edit .env — set GOOGLE_API_KEY and SECRET_KEY at minimum
-
-# 4. Run migrations
+### 3. Database & Server
+Apply the initial Django migrations and boot the server.
+```bash
 python manage.py migrate
-
-# 5. Start development server
 python manage.py runserver
 ```
 
----
-
-## Caching
-
-Geocoding results are cached to avoid redundant API calls for frequently queried cities. The cache key is derived from the normalized location string (lowercased, special characters replaced with underscores).
-
-```
-"Salt Lake City, UT"  ->  geocode:salt_lake_city__ut   TTL: 30 days
-```
-
-**Current backend:** Django `LocMemCache` (in-process, per-worker). Fine for development and single-instance deployments.
-
-**Upgrading to Redis for GCP Cloud Memorystore:** swap one block in `settings.py`:
-
-```python
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": env("REDIS_URL"),
-    }
-}
-```
-
-No other code changes are needed — the cache calls in `routing.py` are backend-agnostic.
+The API will now be available at `http://127.0.0.1:8000/api/route/`.
 
 ---
 
-## Running Tests
+## Running the Test Suite
+The codebase is covered by an extensive suite of 41 unit tests, which verify everything from API boundaries to rigorous brute-force mathematical proofs of the optimization engine.
 
 ```bash
-python manage.py test spotter
+python manage.py test
 ```
-
-Tests cover geo math, the optimizer (including a manual cost verification), and all API error code paths. External services (Google, OSRM) are mocked — no network calls are made during the test run.
-
----
-
-## Dependency Architecture
-
-Each layer only imports from layers below it — never sideways or upward.
-
-```
-api/        ->   services/   ->   utils/   ->   core/
-(HTTP)           (orchestrate)    (math/IO)      (config/constants)
-```
-
-`utils/` never imports from `services/`. `api/` never imports from `utils/` directly.

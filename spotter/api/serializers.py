@@ -3,8 +3,8 @@ from ..core.constants import DEFAULT_BUFFER_GALLONS, DEFAULT_GREEDY_FILL
 
 
 class RouteQuerySerializer(serializers.Serializer):
-    start = serializers.CharField(required=True)
-    finish = serializers.CharField(required=True)
+    start_address = serializers.CharField(required=True)
+    destination_address = serializers.CharField(required=True)
     buffer_gallons = serializers.FloatField(
         required=False, default=DEFAULT_BUFFER_GALLONS, min_value=0.0
     )

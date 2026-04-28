@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
+GOOGLE_API_KEY = ""
 
 BASE_DIR = Path(__file__).parent.parent
 input_csv  = BASE_DIR / "spotter" / "data" / "fuel-prices-for-be-assessment.csv"
@@ -39,7 +39,7 @@ def main():
     chunk_size = 100
 
     if not GOOGLE_API_KEY:
-        log("ERROR: GOOGLE_API_KEY is not set in environment.")
+        log("ERROR: GOOGLE_API_KEY is not set in config.")
         return
 
     if not input_csv.exists():
