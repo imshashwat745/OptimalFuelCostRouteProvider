@@ -120,13 +120,6 @@ python manage.py migrate
 python manage.py runserver
 ```
 
-The API will now be available at `http://127.0.0.1:8000/api/route/`.
+The API will now be available at `http://localhost:8000/api/route/`.
 
----
-
-## Running the Test Suite
-The codebase is covered by an extensive suite of 41 unit tests, which verify everything from API boundaries to rigorous brute-force mathematical proofs of the optimization engine.
-
-```bash
-python manage.py test
-```
+Example api run: `http://localhost:8000/api/route/?start_address=Chicago,IL&destination_address=Denver,CO&buffer_gallons=0&greedy_fill=false`
